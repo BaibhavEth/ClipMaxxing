@@ -100,6 +100,7 @@ class ClipResult(Moment):
 
 class JobRecord(BaseModel):
     id: str
+    user_id: str | None = None
     status: JobStatus = JobStatus.QUEUED
     progress: int = Field(default=0, ge=0, le=100)
     message: str = "Waiting to start"
@@ -144,3 +145,30 @@ class ClipTranscriptResponse(BaseModel):
 
 class SocialPostResponse(BaseModel):
     text: str
+
+
+class ApiKeyRequest(BaseModel):
+    api_key: str = Field(min_length=20, max_length=300)
+
+
+class ApiKeyStatusResponse(BaseModel):
+    configured: bool
+    last4: str | None = None
+
+
+class ProjectSummary(BaseModel):
+    id: str
+    source_url: str
+    title: str | None
+    status: JobStatus
+    progress: int
+    message: str
+    error: str | None
+    clip_count: int
+    target_duration: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProjectListResponse(BaseModel):
+    projects: list[ProjectSummary]

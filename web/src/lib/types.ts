@@ -69,3 +69,22 @@ export interface CreateJobInput {
   clip_count: number;
   target_duration: number;
 }
+
+export interface ProjectSummary {
+  id: string;
+  source_url: string;
+  title: string | null;
+  status: JobStatus;
+  progress: number;
+  message: string;
+  error: string | null;
+  clip_count: number;
+  target_duration: number;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ApiKeyStatus {
+  configured: boolean;
+  last4: string | null;
+}

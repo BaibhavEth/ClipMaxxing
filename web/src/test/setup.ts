@@ -38,4 +38,18 @@ vi.mock("motion/react", async () => {
   };
 });
 
+vi.mock("@/lib/supabase/client", () => ({
+  createClient: () => ({
+    auth: {
+      getSession: vi.fn().mockResolvedValue({
+        data: { session: { access_token: "test-access-token" } },
+      }),
+      getUser: vi.fn().mockResolvedValue({
+        data: { user: { email: "user@example.com" } },
+      }),
+      signOut: vi.fn().mockResolvedValue({ error: null }),
+    },
+  }),
+}));
+
 afterEach(cleanup);

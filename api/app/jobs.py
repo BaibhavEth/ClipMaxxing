@@ -14,6 +14,7 @@ from app.models import (
     JobRecord,
     JobStatus,
 )
+from app.repository import RepositoryError, SupabaseRepository
 from app.services.errors import PipelineError
 from app.services.moments import select_key_moments
 from app.services.transcription import transcribe_audio_chunks
@@ -21,6 +22,23 @@ from app.services.video import extract_audio_chunks, render_clips, render_edited
 from app.services.youtube import download_video, fetch_metadata
 
 logger = logging.getLogger(__name__)
+
+
+def _sync_project(
+    record: JobRecord,
+    repository: SupabaseRepository | None,
+    access_token: str | None,
+    *,
+    include_clips: bool = False,
+) -> None:
+    if repository is None or access_token is None:
+        return
+    try:
+        repository.update_project(record, access_token)
+        if include_clips:
+            repository.upsert_clips(record, access_token)
+    except RepositoryError:
+        logger.exception("Could not sync project %s to account history", record.id)
 
 
 class JobStore:
@@ -42,8 +60,8 @@ class JobStore:
     def _record_path(self, job_id: str) -> Path:
         return self.records_dir / f"{self._safe_id(job_id)}.json"
 
-    def create(self, request: CreateJobRequest) -> JobRecord:
-        record = JobRecord(id=str(uuid4()), request=request)
+    def create(self, request: CreateJobRequest, user_id: str | None = None) -> JobRecord:
+        record = JobRecord(id=str(uuid4()), request=request, user_id=user_id)
         self.save(record)
         return record
 
@@ -117,7 +135,13 @@ class JobStore:
                 logger.warning("Skipping unreadable job record %s", record_path)
 
 
-def run_job(job_id: str, store: JobStore, settings: Settings) -> None:
+def run_job(
+    job_id: str,
+    store: JobStore,
+    settings: Settings,
+    repository: SupabaseRepository | None = None,
+    access_token: str | None = None,
+) -> None:
     work_dir = store.directory(job_id)
     try:
         record = store.get(job_id)
@@ -125,14 +149,15 @@ def run_job(job_id: str, store: JobStore, settings: Settings) -> None:
             return
         url = str(record.request.url)
 
-        store.update(
+        updated = store.update(
             job_id,
             status=JobStatus.DOWNLOADING,
             progress=5,
             message="Reading video details",
         )
+        _sync_project(updated, repository, access_token)
         video_info = fetch_metadata(url, settings)
-        store.update(
+        updated = store.update(
             job_id,
             video=video_info,
             progress=12,
@@ -140,23 +165,25 @@ def run_job(job_id: str, store: JobStore, settings: Settings) -> None:
         )
         video_path = download_video(url, work_dir, settings)
 
-        store.update(
+        updated = store.update(
             job_id,
             status=JobStatus.TRANSCRIBING,
             progress=30,
             message="Preparing audio",
         )
+        _sync_project(updated, repository, access_token)
         chunks = extract_audio_chunks(video_path, work_dir, settings)
         store.update(job_id, progress=40, message="Transcribing with OpenAI")
         transcript = transcribe_audio_chunks(chunks, settings)
         store.update(job_id, transcript=transcript)
 
-        store.update(
+        updated = store.update(
             job_id,
             status=JobStatus.ANALYZING,
             progress=65,
             message="Finding the strongest moments",
         )
+        _sync_project(updated, repository, access_token)
         moments = select_key_moments(
             transcript=transcript.segments,
             video_duration=video_info.duration,
@@ -165,38 +192,42 @@ def run_job(job_id: str, store: JobStore, settings: Settings) -> None:
             settings=settings,
         )
 
-        store.update(
+        updated = store.update(
             job_id,
             status=JobStatus.RENDERING,
             progress=78,
             message="Rendering clips",
         )
+        _sync_project(updated, repository, access_token)
         clips = render_clips(video_path, moments, work_dir, settings)
-        store.update(
+        updated = store.update(
             job_id,
             status=JobStatus.COMPLETE,
             progress=100,
             message=f"Created {len(clips)} clips",
             clips=clips,
         )
+        _sync_project(updated, repository, access_token, include_clips=True)
 
         shutil.rmtree(work_dir / "audio", ignore_errors=True)
     except PipelineError as exc:
         logger.warning("Job %s failed: %s", job_id, exc)
-        store.update(
+        updated = store.update(
             job_id,
             status=JobStatus.FAILED,
             message="Processing failed",
             error=str(exc),
         )
+        _sync_project(updated, repository, access_token)
     except Exception:
         logger.exception("Unexpected failure in job %s", job_id)
-        store.update(
+        updated = store.update(
             job_id,
             status=JobStatus.FAILED,
             message="Processing failed",
             error="An unexpected processing error occurred",
         )
+        _sync_project(updated, repository, access_token)
 
 
 def rerender_clip(
@@ -205,6 +236,8 @@ def rerender_clip(
     edit: ClipEditSettings,
     store: JobStore,
     settings: Settings,
+    repository: SupabaseRepository | None = None,
+    access_token: str | None = None,
 ) -> None:
     temporary: Path | None = None
     try:
@@ -230,7 +263,7 @@ def rerender_clip(
             settings=settings,
         )
         temporary.replace(destination)
-        store.update_clip(
+        updated = store.update_clip(
             job_id,
             filename,
             edit_settings=edit,
@@ -238,6 +271,7 @@ def rerender_clip(
             render_error=None,
             version=clip.version + 1,
         )
+        _sync_project(updated, repository, access_token, include_clips=True)
     except PipelineError as exc:
         logger.warning("Edited clip render failed for %s/%s: %s", job_id, filename, exc)
         if temporary is not None:

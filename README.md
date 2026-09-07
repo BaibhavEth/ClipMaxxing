@@ -1,55 +1,94 @@
 # ClipCraft
 
-ClipCraft is a local YouTube clipping MVP. Paste a public YouTube URL and it will:
+ClipCraft is an open-source, local-first web app that turns long-form YouTube videos into
+focused, editable clips. It downloads a public video, transcribes it with OpenAI, identifies
+strong standalone moments, and renders downloadable MP4 clips with FFmpeg.
 
-1. download the video with `yt-dlp`;
-2. split and transcribe the audio with OpenAI;
-3. select strong, self-contained moments with a structured AI response;
-4. render accurate MP4 clips with `ffmpeg`;
-5. show previews, downloads, and a preset clip editor in the web app.
+![ClipCraft generated clip results](web/public/clipcraft-results.png)
 
-Only process videos you own or have permission to use. You are responsible for complying with
-YouTube's terms and applicable copyright law.
+## Features
+
+- Generate key moments from long YouTube videos
+- Keep clip boundaries aligned with complete thoughts
+- Preview and download generated MP4 clips
+- Edit trim points, aspect ratio, captions, fades, and zoom presets
+- Burn synchronized word-level captions into exported clips
+- Generate editable X post copy with transcript-verified quotes
+- Sign in with Google or an email magic link
+- Save an encrypted bring-your-own OpenAI API key
+- View user-scoped project history
+- Responsive Next.js interface with a FastAPI media pipeline
+- Local job retention and automatic cleanup
+
+## How it works
+
+1. `yt-dlp` reads the video metadata and downloads the source.
+2. FFmpeg extracts compressed audio in manageable chunks.
+3. OpenAI Whisper produces segment- and word-level timestamps.
+4. GPT selects compelling, self-contained moments from the transcript.
+5. FFmpeg renders the selected ranges as H.264/AAC clips.
+6. The editor can re-render a clip with captions, crops, fades, and zoom presets.
+
+## Tech stack
+
+- Next.js 16, React 19, TypeScript, and Tailwind CSS
+- FastAPI, Pydantic, and Python 3.11+
+- OpenAI Whisper and GPT models
+- FFmpeg, FFprobe, and yt-dlp
+- Vitest and pytest
 
 ## Requirements
 
 - A current Node.js LTS release
 - Python 3.11 or newer
-- `ffmpeg` available on `PATH`
+- FFmpeg and FFprobe available on `PATH`
 - An OpenAI API key
 
-On macOS, install ffmpeg with:
+On macOS:
 
 ```bash
 brew install ffmpeg
 ```
 
-## Setup
+## Local setup
 
 ```bash
+git clone <your-repository-url>
+cd ClippingTool
 npm install
 npm run setup:api
 cp .env.example .env
 ```
 
-Add your key to `.env`:
+Create a Supabase project, apply the migration in
+`supabase/migrations/20260906233000_accounts_history.sql`, and add its URL and publishable key to
+the root `.env`:
 
 ```dotenv
-OPENAI_API_KEY=sk-...
+SUPABASE_URL=https://your-project.supabase.co
+SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
+APP_ENCRYPTION_KEY=...
 ```
 
-Then start both services:
+Add the corresponding `NEXT_PUBLIC_SUPABASE_URL` and
+`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` values to `web/.env.local`. Enable email and Google under
+Supabase Authentication Providers. Google OAuth must include this callback:
+
+```text
+https://your-project.supabase.co/auth/v1/callback
+```
+
+Start the frontend and API:
 
 ```bash
 npm run dev
 ```
 
 Open [http://localhost:3000](http://localhost:3000). The API runs at
-[http://localhost:8000](http://localhost:8000), and interactive API docs are available at
+[http://localhost:8000](http://localhost:8000), with interactive documentation at
 [http://localhost:8000/docs](http://localhost:8000/docs).
 
-The frontend defaults to `http://localhost:8000`. If the API uses another address, create
-`web/.env.local`:
+If the API runs at a different URL, add `web/.env.local`:
 
 ```dotenv
 NEXT_PUBLIC_API_URL=http://localhost:8000
@@ -58,69 +97,83 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 ## Commands
 
 ```bash
-npm run dev          # run the web app and API
-npm run lint         # ESLint and Ruff
-npm run test         # Vitest and pytest
-npm run build        # production frontend build
-npm run dev:web      # frontend only
-npm run dev:api      # API only
+npm run dev          # start the web app and API
+npm run lint         # run ESLint and Ruff
+npm run test         # run Vitest and pytest
+npm run build        # build the production frontend
+npm run dev:web      # start only Next.js
+npm run dev:api      # start only FastAPI
 ```
 
 ## Project structure
 
 ```text
-web/                 Next.js interface
-api/app/main.py      FastAPI routes
-api/app/jobs.py      filesystem job state and pipeline orchestration
-api/app/services/    YouTube, OpenAI, and ffmpeg integrations
-api/tests/           backend unit tests
-api/data/            generated local job data (gitignored)
+web/                     Next.js frontend
+web/src/app/             Product routes
+web/src/components/      Job, editor, and shared UI
+api/app/main.py          FastAPI routes
+api/app/jobs.py          Job state and pipeline orchestration
+api/app/services/        YouTube, OpenAI, and FFmpeg integrations
+api/tests/               Backend tests
+api/data/                Local generated data (gitignored)
 ```
-
-## How processing works
-
-Submitting a URL returns a job ID immediately. FastAPI runs the pipeline in a background thread
-and persists progress as JSON under `api/data/`. The frontend polls the job endpoint and displays
-the current stage. Audio is encoded as small mono chunks before transcription so long videos do
-not exceed upload limits. Source video and temporary audio are removed after clips render.
-Completed jobs and clips are retained locally for 24 hours and cleaned up when the API starts or
-a new job is submitted. Source video is also retained for that period so edited clips can be
-rendered without downloading the video again. Temporary audio chunks are removed after the
-initial clips finish.
 
 ## Clip editor
 
-Every newly generated clip includes an **Edit clip** action. The focused editor supports:
+Newly generated clips include an editor with:
 
-- trimming within the original clip boundaries;
 - original, portrait 9:16, and square 1:1 formats;
-- clean, bold, and minimal burned-in caption presets;
-- fade-in and fade-out presets;
-- light and medium punch zoom presets.
+- transcript-driven clean, bold, and minimal caption styles;
+- trim controls that remain within the original moment;
+- fade and punch-zoom presets;
+- an approximate browser preview and final FFmpeg export.
 
-The browser preview approximates crops, captions, and zoom immediately. **Export clip** performs
-the final render from the retained source with FFmpeg, then updates the preview and download URL.
-Projects made before editor support do not have retained source media and must be recreated before
-they can be edited.
+The source video is retained locally for 24 hours so edits do not require another download.
+Projects created before editor support must be recreated before they can be edited.
 
-## X post copy
+## Privacy and security
 
-Finished clip cards include **Generate X post**. The on-demand OpenAI call produces an editable
-Iced Coffee Hour-style hook followed by a strong quote from the selected clip. Quotes are checked
-against the clip transcript before they are returned, which prevents rewritten or invented
-quotations from being presented as verbatim. The generated draft can be edited and copied directly
-from the result card.
+The account layer is designed around user isolation:
 
-## MVP limitations
+- FastAPI validates Supabase sessions and scopes every project by authenticated user ID.
+- OpenAI keys are encrypted with AES-256-GCM and bound to the owning user.
+- Saved keys are decrypted only in API worker memory and are never returned to the browser.
+- Database row-level security prevents users from reading another account's records.
+- Clip URLs use expiring signatures instead of relying on an unprotected UUID.
+- Source video, transcripts, and clips are stored under `api/data/`.
+- Jobs are deleted after the configured retention period, which defaults to 24 hours.
 
-- Public YouTube videos only; private, age-restricted, region-locked, or DRM-protected media may
-  fail.
-- Jobs run in the API process. Restarting it interrupts active work.
-- Job state and clips are local to one machine.
-- Portrait and square formats use a center crop; subject or face tracking is not included.
-- The editor uses presets rather than a freeform multi-track timeline.
-- No accounts, cloud storage, or billing.
-- The OpenAI key stays in the backend and is never sent to the browser.
+The remaining production limitation is media infrastructure: FFmpeg jobs and files still use the
+local API process and disk. Do not scale the API horizontally until jobs move to a durable worker
+and object storage.
 
-For a deployable version, replace background tasks and filesystem state with a durable queue,
-database, and object storage.
+## Product roadmap
+
+The next production milestone is:
+
+- PostgreSQL-backed job metadata
+- Durable background workers
+- Cloudflare R2 media storage
+- Docker images and continuous integration
+
+## Contributing
+
+Contributions are welcome. Before opening a pull request:
+
+1. Create a focused branch.
+2. Add or update tests for behavior changes.
+3. Run `npm run lint`, `npm run test`, and `npm run build`.
+4. Describe the user-facing change and any deployment implications.
+
+For substantial features, open an issue first so the design and scope can be discussed.
+
+## Responsible use
+
+Only process videos you own or have permission to use. You are responsible for complying with
+copyright law and the terms of the source platform. YouTube's terms restrict downloading or
+modifying content unless the service or relevant rights holders authorize it. A public deployment
+should consider direct uploads as the primary ingestion method.
+
+## License
+
+ClipCraft is available under the [MIT License](LICENSE).

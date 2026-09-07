@@ -17,6 +17,9 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_transcription_model: str = "whisper-1"
     openai_moment_model: str = "gpt-5-mini"
+    supabase_url: str = ""
+    supabase_publishable_key: str = ""
+    app_encryption_key: str = ""
     web_origin: str = "http://localhost:3000"
     data_dir: Path = Field(default=ROOT_DIR / "api" / "data")
     max_video_seconds: int = 4 * 60 * 60

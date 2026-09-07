@@ -2,11 +2,12 @@
 
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { FormEvent, useState } from "react";
+import { FormEvent, useEffect, useState } from "react";
 
 import { SiteHeader } from "@/components/site-header";
 import { StudioSelect } from "@/components/studio-select";
-import { createJob } from "@/lib/api";
+import { createJob, getOpenAIKeyStatus } from "@/lib/api";
+import type { ApiKeyStatus } from "@/lib/types";
 
 const CLIP_COUNT_OPTIONS = [3, 4, 5, 6, 7, 8].map((count) => ({
   value: String(count),
@@ -25,6 +26,13 @@ export default function CreatePage() {
   const [duration, setDuration] = useState(45);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [keyStatus, setKeyStatus] = useState<ApiKeyStatus | null>(null);
+
+  useEffect(() => {
+    void getOpenAIKeyStatus()
+      .then(setKeyStatus)
+      .catch(() => setKeyStatus({ configured: false, last4: null }));
+  }, []);
 
   async function handleSubmit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
@@ -69,6 +77,16 @@ export default function CreatePage() {
           <p>Paste a public YouTube video and choose how many clips you want.</p>
         </div>
 
+        {keyStatus && !keyStatus.configured && (
+          <div className="create-key-banner">
+            <div>
+              <strong>Add your OpenAI key first</strong>
+              <p>ClipCraft uses your key for transcription and moment selection.</p>
+            </div>
+            <Link href="/settings">Open settings</Link>
+          </div>
+        )}
+
         <form className="create-form" onSubmit={handleSubmit}>
           <label className="create-url-field">
             <span>YouTube URL</span>
@@ -102,7 +120,7 @@ export default function CreatePage() {
 
           <div className="create-submit-row">
             <p>Clip boundaries may extend slightly so complete thoughts stay intact.</p>
-            <button type="submit" disabled={submitting}>
+            <button type="submit" disabled={submitting || keyStatus?.configured === false}>
               {submitting ? "Starting project…" : "Continue"}
             </button>
           </div>
