@@ -4,7 +4,9 @@ from pathlib import Path
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-ROOT_DIR = Path(__file__).resolve().parents[2]
+APP_DIR = Path(__file__).resolve().parent
+REPO_ROOT = APP_DIR.parents[1]
+ROOT_DIR = REPO_ROOT if (REPO_ROOT / "api").is_dir() else APP_DIR.parent
 
 
 class Settings(BaseSettings):
@@ -21,6 +23,8 @@ class Settings(BaseSettings):
     supabase_publishable_key: str = ""
     app_encryption_key: str = ""
     web_origin: str = "http://localhost:3000"
+    ytdlp_proxy: str = ""
+    youtube_cookies_file: str = ""
     data_dir: Path = Field(default=ROOT_DIR / "api" / "data")
     max_video_seconds: int = 4 * 60 * 60
     process_timeout_seconds: int = 30 * 60

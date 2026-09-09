@@ -5,4 +5,4 @@ openai==3.7.0
 PyJWT[crypto]==2.13.0
 pydantic-settings==2.11.0
 uvicorn[standard]==0.35.0
-yt-dlp==2026.8.19
+yt-dlp[default]==2026.8.19
