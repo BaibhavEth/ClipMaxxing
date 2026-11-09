@@ -35,7 +35,7 @@ export default function HistoryPage() {
         <div className="account-page-heading">
           <div>
             <h1>Project history</h1>
-            <p>Track every video you have processed with this account.</p>
+            <p>Every video you have processed on this machine.</p>
           </div>
         </div>
 
@@ -70,7 +70,7 @@ export default function HistoryPage() {
           </div>
         )}
         <p className="history-retention">
-          Project metadata remains in your history. Local media is currently retained for 24 hours.
+          Projects and their media are stored locally and removed after 24 hours.
         </p>
       </main>
     </div>

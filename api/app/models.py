@@ -14,10 +14,57 @@ class JobStatus(StrEnum):
     FAILED = "failed"
 
 
+class AspectRatio(StrEnum):
+    ORIGINAL = "original"
+    PORTRAIT = "9:16"
+    SQUARE = "1:1"
+
+
+class CaptionStyle(StrEnum):
+    CLEAN = "clean"
+    BOLD = "bold"
+    MINIMAL = "minimal"
+    POP = "pop"
+    SPOTLIGHT = "spotlight"
+    IMPACT = "impact"
+    BOXED = "boxed"
+    SWEEP = "sweep"
+    PUNCH = "punch"
+    GLOW = "glow"
+
+
+class FramingMode(StrEnum):
+    AUTO = "auto"
+    FILL = "fill"
+    FIT = "fit"
+
+
+class SourceKind(StrEnum):
+    YOUTUBE = "youtube"
+    TWITCH = "twitch"
+    UPLOAD = "upload"
+
+
+class RenderOptions(BaseModel):
+    aspect_ratio: AspectRatio = AspectRatio.PORTRAIT
+    framing: FramingMode = FramingMode.AUTO
+    captions: bool = True
+    caption_style: CaptionStyle = CaptionStyle.POP
+    remove_dead_air: bool = True
+    speed: float = Field(default=1.0, ge=1, le=2)
+
+
 class CreateJobRequest(BaseModel):
-    url: HttpUrl
+    url: HttpUrl | None = None
+    source_kind: SourceKind = SourceKind.YOUTUBE
+    upload_name: str | None = Field(default=None, max_length=200)
     clip_count: int = Field(default=5, ge=1, le=8)
     target_duration: int = Field(default=45, ge=15, le=180)
+    render: RenderOptions = Field(default_factory=RenderOptions)
+
+    @property
+    def source_label(self) -> str:
+        return str(self.url) if self.url else (self.upload_name or "Uploaded video")
 
 
 class VideoInfo(BaseModel):
@@ -25,6 +72,8 @@ class VideoInfo(BaseModel):
     duration: float = Field(gt=0)
     source_url: str
     thumbnail_url: str | None = None
+    channel: str = ""
+    description: str = ""
 
 
 class TranscriptSegment(BaseModel):
@@ -42,18 +91,6 @@ class TranscriptWord(BaseModel):
 class TranscriptData(BaseModel):
     segments: list[TranscriptSegment] = Field(default_factory=list)
     words: list[TranscriptWord] = Field(default_factory=list)
-
-
-class AspectRatio(StrEnum):
-    ORIGINAL = "original"
-    PORTRAIT = "9:16"
-    SQUARE = "1:1"
-
-
-class CaptionStyle(StrEnum):
-    CLEAN = "clean"
-    BOLD = "bold"
-    MINIMAL = "minimal"
 
 
 class ZoomPreset(StrEnum):
@@ -77,6 +114,9 @@ class ClipEditSettings(BaseModel):
     fade_in: float = Field(default=0.25, ge=0, le=2)
     fade_out: float = Field(default=0.25, ge=0, le=2)
     zoom: ZoomPreset = ZoomPreset.OFF
+    framing: FramingMode = FramingMode.AUTO
+    remove_dead_air: bool = False
+    speed: float = Field(default=1.0, ge=1, le=2)
 
 
 class Moment(BaseModel):
@@ -84,12 +124,23 @@ class Moment(BaseModel):
     reason: str = Field(min_length=1, max_length=300)
     start: float = Field(ge=0)
     end: float = Field(gt=0)
+    score: float | None = Field(default=None, ge=0, le=10)
+
+
+class RenderReport(BaseModel):
+    output_duration: float = 0
+    removed_seconds: float = 0
+    layouts: list[str] = Field(default_factory=list)
 
 
 class ClipResult(Moment):
     filename: str
     media_url: str = ""
     download_url: str = ""
+    preview_filename: str | None = None
+    preview_start: float | None = None
+    preview_url: str = ""
+    render_report: RenderReport | None = None
     editable: bool = False
     edit_settings: ClipEditSettings | None = None
     render_status: ClipRenderStatus = ClipRenderStatus.READY
@@ -100,7 +151,6 @@ class ClipResult(Moment):
 
 class JobRecord(BaseModel):
     id: str
-    user_id: str | None = None
     status: JobStatus = JobStatus.QUEUED
     progress: int = Field(default=0, ge=0, le=100)
     message: str = "Waiting to start"
@@ -145,20 +195,14 @@ class ClipTranscriptResponse(BaseModel):
 
 class SocialPostResponse(BaseModel):
     text: str
-
-
-class ApiKeyRequest(BaseModel):
-    api_key: str = Field(min_length=20, max_length=300)
-
-
-class ApiKeyStatusResponse(BaseModel):
-    configured: bool
-    last4: str | None = None
+    story_text: str = ""
+    breakdown_text: str = ""
 
 
 class ProjectSummary(BaseModel):
     id: str
     source_url: str
+    source_kind: SourceKind = SourceKind.YOUTUBE
     title: str | None
     status: JobStatus
     progress: int

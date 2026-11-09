@@ -3,22 +3,18 @@
 import Link from "next/link";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { CaptionStylePicker } from "@/components/caption-style-picker";
 import { StudioSelect } from "@/components/studio-select";
 import { getClipTranscript, getJob, renderClip } from "@/lib/api";
+import { FRAMING_OPTIONS, layoutLabel, SPEED_OPTIONS } from "@/lib/render-options";
 import type {
   AspectRatio,
-  CaptionStyle,
   Clip,
   ClipEditSettings,
+  FramingMode,
   TranscriptWord,
   ZoomPreset,
 } from "@/lib/types";
-
-const CAPTION_OPTIONS = [
-  { value: "clean", label: "Clean" },
-  { value: "bold", label: "Bold" },
-  { value: "minimal", label: "Minimal" },
-];
 
 const FADE_OPTIONS = [
   { value: "0", label: "None" },
@@ -33,19 +29,25 @@ const ZOOM_OPTIONS = [
   { value: "medium", label: "Medium" },
 ];
 
+const EDIT_PADDING_SECONDS = 10;
+
+type PreviewMode = "source" | "output";
+
 function defaultSettings(clip: Clip, hasWords: boolean): ClipEditSettings {
-  return (
-    clip.edit_settings ?? {
-      trim_start: clip.start,
-      trim_end: clip.end,
-      aspect_ratio: "original",
-      captions: hasWords,
-      caption_style: "clean",
-      fade_in: 0.25,
-      fade_out: 0.25,
-      zoom: "off",
-    }
-  );
+  return {
+    trim_start: clip.start,
+    trim_end: clip.end,
+    aspect_ratio: "original",
+    captions: hasWords,
+    caption_style: "clean",
+    fade_in: 0.25,
+    fade_out: 0.25,
+    zoom: "off",
+    framing: "auto",
+    remove_dead_air: false,
+    speed: 1,
+    ...clip.edit_settings,
+  };
 }
 
 interface PreviewCaption {
@@ -105,6 +107,11 @@ function captionAt(
   return { cue, activeIndex: activeIndex < 0 ? 0 : activeIndex };
 }
 
+function formatOffset(seconds: number): string {
+  const sign = seconds > 0.05 ? "+" : seconds < -0.05 ? "−" : "";
+  return `${sign}${Math.abs(seconds).toFixed(1)}s`;
+}
+
 export function ClipEditor({
   jobId,
   filename,
@@ -114,8 +121,10 @@ export function ClipEditor({
 }) {
   const videoRef = useRef<HTMLVideoElement>(null);
   const [clip, setClip] = useState<Clip | null>(null);
+  const [videoDuration, setVideoDuration] = useState<number | null>(null);
   const [words, setWords] = useState<TranscriptWord[]>([]);
   const [settings, setSettings] = useState<ClipEditSettings | null>(null);
+  const [previewMode, setPreviewMode] = useState<PreviewMode>("source");
   const [caption, setCaption] = useState<{
     cue: PreviewCaption;
     activeIndex: number;
@@ -141,6 +150,7 @@ export function ClipEditor({
         const loadedClip = loadedJob.clips.find((item) => item.filename === filename);
         if (!loadedClip) throw new Error("Clip not found");
         setClip(loadedClip);
+        setVideoDuration(loadedJob.video?.duration ?? null);
         setWords(loadedWords);
         setSettings(defaultSettings(loadedClip, loadedWords.length > 0));
       })
@@ -178,6 +188,7 @@ export function ClipEditor({
           setSettings(defaultSettings(nextClip, words.length > 0));
           setExporting(false);
           setExported(true);
+          setPreviewMode("output");
           return;
         }
         timer = setTimeout(poll, 1500);
@@ -203,16 +214,30 @@ export function ClipEditor({
     setSettings((current) => (current ? { ...current, [key]: value } : current));
   }
 
+  const hasSourcePreview = Boolean(clip?.preview_url && clip.preview_start != null);
+  const mediaStart = hasSourcePreview
+    ? (clip?.preview_start ?? 0)
+    : (clip?.edit_settings?.trim_start ?? clip?.start ?? 0);
+  const windowStart = hasSourcePreview ? mediaStart : (clip?.start ?? 0);
+  const windowEnd = hasSourcePreview
+    ? Math.min(videoDuration ?? Infinity, (clip?.end ?? 0) + EDIT_PADDING_SECONDS)
+    : (clip?.end ?? 0);
+  const showingSource = previewMode === "source";
+
   function restartPreview() {
-    if (!clip || !settings || !videoRef.current) return;
-    const mediaStart = clip.edit_settings?.trim_start ?? clip.start;
+    if (!settings || !videoRef.current) return;
+    setPreviewMode("source");
     videoRef.current.currentTime = Math.max(0, settings.trim_start - mediaStart);
     void videoRef.current.play();
   }
 
+  function handleLoadedMetadata() {
+    if (!settings || !videoRef.current || !showingSource || !hasSourcePreview) return;
+    videoRef.current.currentTime = Math.max(0, settings.trim_start - mediaStart);
+  }
+
   function handleTimeUpdate() {
-    if (!clip || !settings || !videoRef.current) return;
-    const mediaStart = clip.edit_settings?.trim_start ?? clip.start;
+    if (!clip || !settings || !videoRef.current || !showingSource) return;
     const absoluteTime = mediaStart + videoRef.current.currentTime;
     setCaption(settings.captions ? captionAt(previewCaptions, absoluteTime) : null);
     if (absoluteTime >= settings.trim_end) {
@@ -262,6 +287,11 @@ export function ClipEditor({
 
   const duration = settings.trim_end - settings.trim_start;
   const zoomScale = { off: 1, light: 1.08, medium: 1.15 }[settings.zoom];
+  const report = clip.render_report;
+  const outputAspect = clip.edit_settings?.aspect_ratio ?? "original";
+  const previewAspect = showingSource ? "original" : outputAspect;
+  const previewSource = showingSource && hasSourcePreview ? clip.preview_url : clip.media_url;
+  const framingDisabled = settings.aspect_ratio === "original";
 
   return (
     <section className="clip-editor">
@@ -277,7 +307,9 @@ export function ClipEditor({
               <h1>Edit clip</h1>
               <p>{clip.title}</p>
             </div>
-            <span className="duration-pill">{duration.toFixed(1)} seconds</span>
+            <span className="duration-pill">
+              {(duration / settings.speed).toFixed(1)} seconds
+            </span>
           </div>
         </div>
         <div className="editor-toolbar-actions">
@@ -300,23 +332,48 @@ export function ClipEditor({
           <div className="panel-heading">
             <div>
               <h2>Preview</h2>
-              <p>Review the crop, captions, and timing before export.</p>
+              <p>
+                {showingSource
+                  ? "Source footage with your cuts and live captions."
+                  : "The last export, framed and paced."}
+              </p>
             </div>
-            <span>{settings.aspect_ratio === "original" ? "Source format" : settings.aspect_ratio}</span>
+            <div className="preview-tabs" role="tablist" aria-label="Preview">
+              <button
+                aria-selected={showingSource}
+                role="tab"
+                type="button"
+                onClick={() => setPreviewMode("source")}
+              >
+                Source
+              </button>
+              <button
+                aria-selected={!showingSource}
+                role="tab"
+                type="button"
+                onClick={() => {
+                  setCaption(null);
+                  setPreviewMode("output");
+                }}
+              >
+                Output
+              </button>
+            </div>
           </div>
-          <div className={`editor-preview aspect-${settings.aspect_ratio.replace(":", "-")}`}>
+          <div className={`editor-preview aspect-${previewAspect.replace(":", "-")}`}>
             <video
-              key={clip.media_url}
+              key={`${previewMode}-${previewSource}`}
               ref={videoRef}
               controls
               preload="metadata"
-              src={clip.media_url}
+              src={previewSource}
+              onLoadedMetadata={handleLoadedMetadata}
               onTimeUpdate={handleTimeUpdate}
-              style={{ transform: `scale(${zoomScale})` }}
+              style={showingSource ? { transform: `scale(${zoomScale})` } : undefined}
             >
               <track kind="captions" />
             </video>
-            {caption && (
+            {showingSource && caption && (
               <div className={`caption-preview caption-${settings.caption_style}`}>
                 {caption.cue.words.map((word, index) => (
                   <span className={index === caption.activeIndex ? "active" : ""} key={index}>
@@ -330,9 +387,17 @@ export function ClipEditor({
             <button className="preview-button" type="button" onClick={restartPreview}>
               Play from trim start
             </button>
-            <p className="preview-note">
-              Final quality is rendered from the original source.
-            </p>
+            {report ? (
+              <p className="preview-note render-report">
+                {report.layouts.length > 0 &&
+                  `${report.layouts.map(layoutLabel).join(", ")} · `}
+                {report.removed_seconds >= 0.1
+                  ? `${report.removed_seconds.toFixed(1)}s of dead air removed`
+                  : "No dead air removed"}
+              </p>
+            ) : (
+              <p className="preview-note">Final quality is rendered from the original source.</p>
+            )}
           </div>
         </div>
 
@@ -340,7 +405,7 @@ export function ClipEditor({
           <div className="panel-heading inspector-heading">
             <div>
               <h2>Adjustments</h2>
-              <p>Apply a consistent preset to this clip.</p>
+              <p>Framing, pacing, and captions for this clip.</p>
             </div>
           </div>
 
@@ -349,18 +414,18 @@ export function ClipEditor({
             <div className="trim-values">
               <label>
                 Start
-                <span>+{(settings.trim_start - clip.start).toFixed(1)}s</span>
+                <span>{formatOffset(settings.trim_start - clip.start)}</span>
               </label>
               <label>
                 End
-                <span>-{(clip.end - settings.trim_end).toFixed(1)}s</span>
+                <span>{formatOffset(settings.trim_end - clip.end)}</span>
               </label>
             </div>
             <label className="range-control">
               <span className="sr-only">Trim start</span>
               <input
                 type="range"
-                min={clip.start}
+                min={windowStart}
                 max={settings.trim_end - 2}
                 step="0.1"
                 value={settings.trim_start}
@@ -372,12 +437,17 @@ export function ClipEditor({
               <input
                 type="range"
                 min={settings.trim_start + 2}
-                max={clip.end}
+                max={windowEnd}
                 step="0.1"
                 value={settings.trim_end}
                 onChange={(event) => updateSetting("trim_end", Number(event.target.value))}
               />
             </label>
+            {hasSourcePreview && (
+              <p className="control-hint">
+                Cuts can extend up to {EDIT_PADDING_SECONDS} seconds beyond the suggested clip.
+              </p>
+            )}
           </fieldset>
 
           <fieldset className="control-section">
@@ -394,6 +464,39 @@ export function ClipEditor({
                 </button>
               ))}
             </div>
+            <div className="control-spacer">
+              <StudioSelect
+                label="Framing"
+                value={settings.framing}
+                options={FRAMING_OPTIONS}
+                disabled={framingDisabled}
+                onChange={(value) => updateSetting("framing", value as FramingMode)}
+              />
+            </div>
+          </fieldset>
+
+          <fieldset className="control-section">
+            <legend>Pacing</legend>
+            <label className="toggle-row">
+              <span>
+                Remove dead air
+                <small>
+                  {words.length ? "Cuts long pauses and “um”s" : "Needs a word-level transcript"}
+                </small>
+              </span>
+              <input
+                type="checkbox"
+                checked={settings.remove_dead_air}
+                disabled={!words.length}
+                onChange={(event) => updateSetting("remove_dead_air", event.target.checked)}
+              />
+            </label>
+            <StudioSelect
+              label="Speed"
+              value={String(settings.speed)}
+              options={SPEED_OPTIONS}
+              onChange={(value) => updateSetting("speed", Number(value))}
+            />
           </fieldset>
 
           <fieldset className="control-section">
@@ -411,11 +514,9 @@ export function ClipEditor({
               />
             </label>
             {settings.captions && (
-              <StudioSelect
-                label="Caption style"
+              <CaptionStylePicker
                 value={settings.caption_style}
-                options={CAPTION_OPTIONS}
-                onChange={(value) => updateSetting("caption_style", value as CaptionStyle)}
+                onChange={(value) => updateSetting("caption_style", value)}
               />
             )}
           </fieldset>

@@ -17,9 +17,7 @@ def merge_chunk_segments(
     merged: list[TranscriptSegment] = []
     for chunk_index, segments in enumerate(segments_by_chunk):
         offset = (
-            chunk_offsets[chunk_index]
-            if chunk_offsets is not None
-            else chunk_index * chunk_seconds
+            chunk_offsets[chunk_index] if chunk_offsets is not None else chunk_index * chunk_seconds
         )
         for segment in segments:
             text = segment.text.strip()
@@ -42,9 +40,7 @@ def merge_chunk_words(
     merged: list[TranscriptWord] = []
     for chunk_index, words in enumerate(words_by_chunk):
         offset = (
-            chunk_offsets[chunk_index]
-            if chunk_offsets is not None
-            else chunk_index * chunk_seconds
+            chunk_offsets[chunk_index] if chunk_offsets is not None else chunk_index * chunk_seconds
         )
         for word in words:
             text = word.word.strip()
@@ -133,9 +129,7 @@ def transcribe_audio_chunks(
             text = _segment_value(item, "text")
             if start is None or end is None or not text or float(end) <= float(start):
                 continue
-            parsed.append(
-                TranscriptSegment(start=float(start), end=float(end), text=str(text))
-            )
+            parsed.append(TranscriptSegment(start=float(start), end=float(end), text=str(text)))
         all_chunks.append(parsed)
 
         parsed_words: list[TranscriptWord] = []
@@ -145,9 +139,7 @@ def transcribe_audio_chunks(
             word = _segment_value(item, "word")
             if start is None or end is None or not word or float(end) <= float(start):
                 continue
-            parsed_words.append(
-                TranscriptWord(start=float(start), end=float(end), word=str(word))
-            )
+            parsed_words.append(TranscriptWord(start=float(start), end=float(end), word=str(word)))
         all_word_chunks.append(parsed_words)
 
     merged_segments = merge_chunk_segments(

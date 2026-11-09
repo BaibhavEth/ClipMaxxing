@@ -83,6 +83,44 @@ describe("clip editor", () => {
     );
   });
 
+  it("extends cuts into the preview window and sends pacing settings", async () => {
+    mockedGetJob.mockResolvedValue({
+      ...job,
+      clips: [
+        {
+          ...job.clips[0],
+          preview_url: "http://localhost:8000/previews/preview-01.mp4",
+          preview_start: 0,
+        },
+      ],
+    });
+    render(<ClipEditor jobId="job-id" filename="clip-01.mp4" />);
+
+    expect(await screen.findByRole("heading", { name: "Edit clip" })).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("slider", { name: "Trim start" }), {
+      target: { value: "4" },
+    });
+    fireEvent.change(screen.getByRole("slider", { name: "Trim end" }), {
+      target: { value: "62" },
+    });
+    fireEvent.click(screen.getByRole("checkbox", { name: /Remove dead air/ }));
+    fireEvent.click(screen.getByRole("radio", { name: /Spotlight/ }));
+    fireEvent.click(screen.getByRole("button", { name: "Export clip" }));
+
+    await waitFor(() =>
+      expect(mockedRenderClip).toHaveBeenCalledWith(
+        "job-id",
+        "clip-01.mp4",
+        expect.objectContaining({
+          trim_start: 4,
+          trim_end: 62,
+          remove_dead_air: true,
+          caption_style: "spotlight",
+        }),
+      ),
+    );
+  });
+
   it("explains why a legacy clip cannot be edited", async () => {
     mockedGetJob.mockResolvedValue({
       ...job,

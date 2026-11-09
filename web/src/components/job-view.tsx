@@ -4,6 +4,13 @@ import Link from "next/link";
 import { useEffect, useState } from "react";
 
 import { generateSocialPost, getJob } from "@/lib/api";
+import { layoutLabel } from "@/lib/render-options";
+import {
+  parseSocialPosts,
+  SOCIAL_STYLES,
+  type SocialPosts,
+  type SocialStyle,
+} from "@/lib/social-posts";
 import type { Clip, Job, JobStatus } from "@/lib/types";
 
 const STEPS: { status: JobStatus; label: string }[] = [
@@ -46,22 +53,41 @@ function ClipCard({
 }) {
   const shownStart = clip.edit_settings?.trim_start ?? clip.start;
   const shownEnd = clip.edit_settings?.trim_end ?? clip.end;
-  const [socialPost, setSocialPost] = useState(clip.social_post ?? "");
+  const [posts, setPosts] = useState<SocialPosts>(() => parseSocialPosts(clip.social_post));
+  const [activeStyle, setActiveStyle] = useState<SocialStyle>("quote");
   const [showSocialPost, setShowSocialPost] = useState(false);
   const [generatingPost, setGeneratingPost] = useState(false);
   const [postError, setPostError] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+  const activePost = posts[activeStyle];
+  const hasAllPosts = Boolean(posts.quote && posts.story && posts.breakdown);
+  const activeLabel = SOCIAL_STYLES.find(({ style }) => style === activeStyle)?.label;
+  const aspect = clip.edit_settings?.aspect_ratio ?? "original";
+  const report = clip.render_report;
+  const shownDuration = report?.output_duration || shownEnd - shownStart;
+  const details = [
+    aspect === "original" ? "Original format" : aspect,
+    report?.layouts[0] ? layoutLabel(report.layouts[0]) : null,
+    report && report.removed_seconds >= 0.1
+      ? `${report.removed_seconds.toFixed(1)}s dead air cut`
+      : null,
+  ].filter(Boolean);
 
   async function handleGeneratePost() {
-    if (socialPost) {
+    if (hasAllPosts) {
       setShowSocialPost(true);
       return;
     }
     setGeneratingPost(true);
     setPostError(null);
     try {
-      const text = await generateSocialPost(jobId, clip.filename);
-      setSocialPost(text);
+      const generated = await generateSocialPost(jobId, clip.filename);
+      setPosts({
+        quote: generated.text,
+        story: generated.story_text,
+        breakdown: generated.breakdown_text,
+      });
+      setActiveStyle(generated.story_text ? "story" : "quote");
       setShowSocialPost(true);
     } catch (error) {
       setPostError(error instanceof Error ? error.message : "Could not generate the post");
@@ -72,7 +98,7 @@ function ClipCard({
 
   async function handleCopyPost() {
     try {
-      await navigator.clipboard.writeText(socialPost);
+      await navigator.clipboard.writeText(activePost);
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1600);
     } catch {
@@ -82,14 +108,19 @@ function ClipCard({
 
   return (
     <article className="result-card">
-      <div className="result-video">
+      <div className={`result-video aspect-${aspect.replace(":", "-")}`}>
         <video controls preload="metadata" src={clip.media_url}>
           <track kind="captions" />
         </video>
         <div className="result-video-meta">
           <span>Clip {String(index + 1).padStart(2, "0")}</span>
-          <span>{Math.round(shownEnd - shownStart)} sec</span>
+          <span>{Math.round(shownDuration)} sec</span>
         </div>
+        {clip.score != null && (
+          <span className="result-score" title="Editor score out of 10">
+            {clip.score.toFixed(1)}
+          </span>
+        )}
       </div>
       <div className="result-card-body">
         <span className="result-time">
@@ -109,7 +140,7 @@ function ClipCard({
               </Link>
             )}
           </div>
-          <span>MP4 · Original quality</span>
+          <span>{details.join(" · ")}</span>
         </div>
         <button
           className="social-post-trigger"
@@ -118,33 +149,53 @@ function ClipCard({
           onClick={handleGeneratePost}
         >
           {generatingPost
-            ? "Writing X post…"
-            : socialPost
-              ? "View X post"
-              : "Generate X post"}
+            ? "Writing X posts…"
+            : hasAllPosts
+              ? "View X posts"
+              : "Generate X posts"}
         </button>
         {postError && <p className="result-render-error">{postError}</p>}
         {showSocialPost && (
           <div className="social-composer">
             <div className="social-composer-heading">
               <div>
-                <span>X post draft</span>
-                <p>Iced Coffee Hour format</p>
+                <span>X post drafts</span>
+                <p>Quote, three-beat story, and in-depth breakdown</p>
               </div>
               <button type="button" onClick={() => setShowSocialPost(false)}>
                 Close
               </button>
             </div>
+            <div className="social-style-tabs" role="tablist" aria-label="X post format">
+              {SOCIAL_STYLES.map(({ style, label }) => (
+                <button
+                  aria-selected={activeStyle === style}
+                  key={style}
+                  role="tab"
+                  type="button"
+                  onClick={() => {
+                    setActiveStyle(style);
+                    setCopied(false);
+                  }}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
             <textarea
-              aria-label="X post draft"
-              value={socialPost}
+              aria-label={`${activeLabel} X post draft`}
+              className={activeStyle === "breakdown" ? "social-breakdown" : undefined}
+              value={activePost}
               onChange={(event) => {
-                setSocialPost(event.target.value);
+                setPosts((current) => ({ ...current, [activeStyle]: event.target.value }));
                 setCopied(false);
               }}
             />
             <div className="social-composer-footer">
-              <span>{socialPost.length} characters</span>
+              <span>
+                {activePost.length} characters
+                {activePost.length > 280 && " · needs X Premium"}
+              </span>
               <button type="button" onClick={handleCopyPost}>
                 {copied ? "Copied" : "Copy post"}
               </button>
@@ -250,7 +301,7 @@ export function JobView({ jobId }: { jobId: string }) {
       <section className="job-failed">
         <span>Processing stopped</span>
         <h1>We couldn&apos;t finish this video.</h1>
-        <p>{job.error ?? "Try another public YouTube video."}</p>
+        <p>{job.error ?? "Try another public video or upload a file."}</p>
         <Link href="/create">Start a new project</Link>
       </section>
     );

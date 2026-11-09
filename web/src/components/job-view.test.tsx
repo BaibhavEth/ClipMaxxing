@@ -105,14 +105,30 @@ describe("job view", () => {
       created_at: "2026-01-01T00:00:00Z",
       updated_at: "2026-01-01T00:01:00Z",
     });
-    const post = "A surprising business lesson…\n\n“An exact quote from the clip.”";
-    mockedGeneratePost.mockResolvedValue(post);
+    const quotePost = "A surprising business lesson…\n\n“An exact quote from the clip.”";
+    const storyPost =
+      "Brian Armstrong built Coinbase from 8pm to midnight\n\nhe never touched Airbnb's laptop doing it\n\nfriendships were the actual cost";
+    const breakdownPost =
+      "Brian Armstrong built Coinbase while working at Airbnb\n\n8pm to midnight, 3 to 4 nights a week\n\nWould you trade 18 months of weekends for that?";
+    mockedGeneratePost.mockResolvedValue({
+      text: quotePost,
+      story_text: storyPost,
+      breakdown_text: breakdownPost,
+    });
     render(<JobView jobId="job-id" />);
 
-    fireEvent.click(await screen.findByRole("button", { name: "Generate X post" }));
+    fireEvent.click(await screen.findByRole("button", { name: "Generate X posts" }));
 
-    expect(await screen.findByRole("textbox", { name: "X post draft" })).toHaveValue(post);
+    expect(await screen.findByRole("textbox", { name: "Story X post draft" })).toHaveValue(
+      storyPost,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Breakdown" }));
+    expect(screen.getByRole("textbox", { name: "Breakdown X post draft" })).toHaveValue(
+      breakdownPost,
+    );
+    fireEvent.click(screen.getByRole("tab", { name: "Quote" }));
+    expect(screen.getByRole("textbox", { name: "Quote X post draft" })).toHaveValue(quotePost);
     fireEvent.click(screen.getByRole("button", { name: "Copy post" }));
-    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(post);
+    expect(navigator.clipboard.writeText).toHaveBeenCalledWith(quotePost);
   });
 });

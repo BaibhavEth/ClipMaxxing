@@ -19,14 +19,13 @@ class Settings(BaseSettings):
     openai_api_key: str = ""
     openai_transcription_model: str = "whisper-1"
     openai_moment_model: str = "gpt-5-mini"
-    supabase_url: str = ""
-    supabase_publishable_key: str = ""
-    app_encryption_key: str = ""
+    openai_social_model: str = "gpt-5"
     web_origin: str = "http://localhost:3000"
     ytdlp_proxy: str = ""
     youtube_cookies_file: str = ""
     data_dir: Path = Field(default=ROOT_DIR / "api" / "data")
     max_video_seconds: int = 4 * 60 * 60
+    max_upload_mb: int = 4096
     process_timeout_seconds: int = 30 * 60
     audio_chunk_seconds: int = 10 * 60
     job_retention_hours: int = 24

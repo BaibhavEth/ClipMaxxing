@@ -15,7 +15,7 @@ describe("landing page", () => {
       screen.getByRole("heading", { name: "Turn long videos into clips worth watching." }),
     ).toBeInTheDocument();
     expect(screen.getAllByRole("link", { name: "Start clipping" })).toHaveLength(3);
-    expect(screen.getByRole("link", { name: "Sign in" })).toHaveAttribute("href", "/login");
+    expect(screen.getByRole("link", { name: "History" })).toHaveAttribute("href", "/history");
     expect(screen.getByRole("heading", { name: "Copy the YouTube link" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Choose your output" })).toBeInTheDocument();
     expect(screen.getByRole("heading", { name: "Review and download" })).toBeInTheDocument();

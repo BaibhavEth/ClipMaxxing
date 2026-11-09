@@ -1,0 +1,14 @@
+# Vercel only hosts the Next.js app. Keep API data and local tooling off the upload.
+api
+api/**
+**/.venv
+**/node_modules
+**/.next
+**/*.mp4
+**/*.part
+supabase/.temp
+coverage
+.pytest_cache
+.ruff_cache
+.env
+.env.local

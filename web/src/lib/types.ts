@@ -15,8 +15,20 @@ export interface VideoInfo {
 }
 
 export type AspectRatio = "original" | "9:16" | "1:1";
-export type CaptionStyle = "clean" | "bold" | "minimal";
+export type CaptionStyle =
+  | "clean"
+  | "bold"
+  | "minimal"
+  | "pop"
+  | "spotlight"
+  | "impact"
+  | "boxed"
+  | "sweep"
+  | "punch"
+  | "glow";
 export type ZoomPreset = "off" | "light" | "medium";
+export type FramingMode = "auto" | "fill" | "fit";
+export type SourceKind = "youtube" | "twitch" | "upload";
 export type ClipRenderStatus = "ready" | "rendering" | "failed";
 
 export interface TranscriptWord {
@@ -34,6 +46,24 @@ export interface ClipEditSettings {
   fade_in: number;
   fade_out: number;
   zoom: ZoomPreset;
+  framing: FramingMode;
+  remove_dead_air: boolean;
+  speed: number;
+}
+
+export interface RenderOptions {
+  aspect_ratio: AspectRatio;
+  framing: FramingMode;
+  captions: boolean;
+  caption_style: CaptionStyle;
+  remove_dead_air: boolean;
+  speed: number;
+}
+
+export interface RenderReport {
+  output_duration: number;
+  removed_seconds: number;
+  layouts: string[];
 }
 
 export interface Clip {
@@ -41,9 +71,13 @@ export interface Clip {
   reason: string;
   start: number;
   end: number;
+  score?: number | null;
   filename: string;
   media_url: string;
   download_url: string;
+  preview_url?: string;
+  preview_start?: number | null;
+  render_report?: RenderReport | null;
   editable: boolean;
   edit_settings: ClipEditSettings | null;
   render_status: ClipRenderStatus;
@@ -68,11 +102,20 @@ export interface CreateJobInput {
   url: string;
   clip_count: number;
   target_duration: number;
+  render?: RenderOptions;
+}
+
+export interface UploadJobInput {
+  file: File;
+  clip_count: number;
+  target_duration: number;
+  render: RenderOptions;
 }
 
 export interface ProjectSummary {
   id: string;
   source_url: string;
+  source_kind?: SourceKind;
   title: string | null;
   status: JobStatus;
   progress: number;
@@ -82,9 +125,4 @@ export interface ProjectSummary {
   target_duration: number;
   created_at: string;
   updated_at: string;
-}
-
-export interface ApiKeyStatus {
-  configured: boolean;
-  last4: string | null;
 }

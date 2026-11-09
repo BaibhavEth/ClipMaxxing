@@ -14,9 +14,7 @@ strong standalone moments, and renders downloadable MP4 clips with FFmpeg.
 - Edit trim points, aspect ratio, captions, fades, and zoom presets
 - Burn synchronized word-level captions into exported clips
 - Generate editable X post copy with transcript-verified quotes
-- Sign in with Google or an email magic link
-- Save an encrypted bring-your-own OpenAI API key
-- View user-scoped project history
+- Browse local project history
 - Responsive Next.js interface with a FastAPI media pipeline
 - Local job retention and automatic cleanup
 
@@ -60,23 +58,7 @@ npm run setup:api
 cp .env.example .env
 ```
 
-Create a Supabase project, apply the migration in
-`supabase/migrations/20260906233000_accounts_history.sql`, and add its URL and publishable key to
-the root `.env`:
-
-```dotenv
-SUPABASE_URL=https://your-project.supabase.co
-SUPABASE_PUBLISHABLE_KEY=sb_publishable_...
-APP_ENCRYPTION_KEY=...
-```
-
-Add the corresponding `NEXT_PUBLIC_SUPABASE_URL` and
-`NEXT_PUBLIC_SUPABASE_PUBLISHABLE_KEY` values to `web/.env.local`. Enable email and Google under
-Supabase Authentication Providers. Google OAuth must include this callback:
-
-```text
-https://your-project.supabase.co/auth/v1/callback
-```
+Add your OpenAI key to the root `.env` as `OPENAI_API_KEY`.
 
 Start the frontend and API:
 
@@ -133,19 +115,12 @@ Projects created before editor support must be recreated before they can be edit
 
 ## Privacy and security
 
-The account layer is designed around user isolation:
+ClipCraft is built to run on your own machine and has no accounts or authentication. Do not
+expose the API to the internet.
 
-- FastAPI validates Supabase sessions and scopes every project by authenticated user ID.
-- OpenAI keys are encrypted with AES-256-GCM and bound to the owning user.
-- Saved keys are decrypted only in API worker memory and are never returned to the browser.
-- Database row-level security prevents users from reading another account's records.
-- Clip URLs use expiring signatures instead of relying on an unprotected UUID.
+- Your OpenAI key stays in the root `.env` and is only used by the local API.
 - Source video, transcripts, and clips are stored under `api/data/`.
 - Jobs are deleted after the configured retention period, which defaults to 24 hours.
-
-The remaining production limitation is media infrastructure: FFmpeg jobs and files still use the
-local API process and disk. Do not scale the API horizontally until jobs move to a durable worker
-and object storage.
 
 ## Product roadmap
 

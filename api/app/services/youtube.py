@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 import shutil
 import subprocess
 import sys
@@ -8,8 +9,9 @@ from pathlib import Path
 from urllib.parse import urlparse
 
 from app.config import Settings
-from app.models import VideoInfo
+from app.models import SourceKind, VideoInfo
 from app.services.errors import PipelineError
+from app.services.framing import probe_media
 
 logger = logging.getLogger(__name__)
 
@@ -30,16 +32,24 @@ PLAYER_CLIENTS = (
 )
 
 
-def validate_youtube_url(value: str) -> str:
+TWITCH_HOSTS = {"twitch.tv", "www.twitch.tv", "m.twitch.tv"}
+
+
+def source_kind_for_url(value: str) -> SourceKind:
+    """Classify a public video URL, rejecting anything we don't download from."""
     parsed = urlparse(value)
     host = (parsed.hostname or "").lower().rstrip(".")
-    if (
-        parsed.scheme not in {"http", "https"}
-        or host not in ALLOWED_HOSTS
-        or parsed.username
-        or parsed.password
-    ):
-        raise ValueError("Enter a valid youtube.com or youtu.be URL")
+    if parsed.scheme not in {"http", "https"} or parsed.username or parsed.password:
+        raise ValueError("Enter a valid YouTube or Twitch VOD URL")
+    if host in ALLOWED_HOSTS:
+        return SourceKind.YOUTUBE
+    if host in TWITCH_HOSTS and re.fullmatch(r"/videos/\d+/?", parsed.path):
+        return SourceKind.TWITCH
+    raise ValueError("Enter a valid YouTube or Twitch VOD URL")
+
+
+def validate_youtube_url(value: str) -> str:
+    source_kind_for_url(value)
     return value
 
 
@@ -95,10 +105,7 @@ def classify_ytdlp_error(stderr: str) -> str:
             "confirm you're not a bot",
         )
     ):
-        return (
-            "YouTube blocked this download from our cloud server. "
-            "Wait a minute and try again."
-        )
+        return "YouTube blocked this download from our cloud server. Wait a minute and try again."
     if "requested format is not available" in text:
         return "Could not download a compatible video format."
     return "Could not access this video. Make sure it is public and available."
@@ -140,13 +147,13 @@ def _run_ytdlp(
                 exc,
             )
             if index + 1 < len(PLAYER_CLIENTS):
-                time.sleep(min(8, 2 ** index))
+                time.sleep(min(8, 2**index))
     assert last_error is not None
     raise last_error
 
 
 def fetch_metadata(url: str, settings: Settings) -> VideoInfo:
-    validate_youtube_url(url)
+    source_kind_for_url(url)
     result = _run_ytdlp(
         settings,
         ["--dump-single-json", "--no-warnings", url],
@@ -169,6 +176,23 @@ def fetch_metadata(url: str, settings: Settings) -> VideoInfo:
         duration=duration,
         source_url=url,
         thumbnail_url=payload.get("thumbnail"),
+        channel=str(payload.get("channel") or payload.get("uploader") or "")[:120],
+        description=str(payload.get("description") or "")[:1500],
+    )
+
+
+def local_video_info(video_path: Path, display_name: str, settings: Settings) -> VideoInfo:
+    media = probe_media(video_path, timeout=min(60, settings.process_timeout_seconds))
+    if media.duration <= 0:
+        raise PipelineError("This file has no usable duration")
+    if media.duration > settings.max_video_seconds:
+        max_hours = settings.max_video_seconds // 3600
+        raise PipelineError(f"Videos longer than {max_hours} hours are not supported")
+    title = Path(display_name).stem.replace("_", " ").strip() or "Uploaded video"
+    return VideoInfo(
+        title=title[:200],
+        duration=media.duration,
+        source_url=display_name,
     )
 
 

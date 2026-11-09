@@ -1,23 +1,24 @@
-import base64
-import hashlib
-import hmac
-import time
-from contextlib import asynccontextmanager, suppress
+import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Annotated
 
-from fastapi import BackgroundTasks, Depends, FastAPI, HTTPException, Query, Request
+from fastapi import (
+    BackgroundTasks,
+    FastAPI,
+    File,
+    Form,
+    HTTPException,
+    Query,
+    Request,
+    UploadFile,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
-from openai import OpenAI
 
-from app.auth import CurrentUser, get_current_user
 from app.config import get_settings
-from app.crypto import decrypt_secret, encrypt_secret
 from app.jobs import JobStore, rerender_clip, run_job
 from app.models import (
-    ApiKeyRequest,
-    ApiKeyStatusResponse,
     ClipRenderStatus,
     ClipTranscriptResponse,
     CreateJobRequest,
@@ -25,26 +26,24 @@ from app.models import (
     JobResponse,
     JobStatus,
     ProjectListResponse,
+    ProjectSummary,
     RenderClipRequest,
     RenderClipResponse,
+    RenderOptions,
     SocialPostResponse,
+    SourceKind,
 )
-from app.repository import RepositoryError, SupabaseRepository
 from app.services.errors import PipelineError
-from app.services.social import generate_social_post
-from app.services.youtube import validate_youtube_url
+from app.services.social import generate_social_post, serialize_social_posts
+from app.services.video import clip_window
+from app.services.youtube import source_kind_for_url
+
+SOCIAL_CONTEXT_SECONDS = 60
+UPLOAD_EXTENSIONS = {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi"}
+UPLOAD_CHUNK_BYTES = 4 * 1024 * 1024
 
 settings = get_settings()
 store = JobStore(settings.data_dir)
-repository = SupabaseRepository(settings)
-AuthenticatedUser = Annotated[CurrentUser, Depends(get_current_user)]
-allowed_origins = {
-    settings.web_origin.rstrip("/"),
-    "http://localhost:3000",
-    "http://127.0.0.1:3000",
-    "http://localhost:3001",
-    "http://127.0.0.1:3001",
-}
 
 
 @asynccontextmanager
@@ -53,30 +52,26 @@ async def lifespan(_: FastAPI):
     yield
 
 
-app = FastAPI(title="ClipCraft API", version="0.2.0", lifespan=lifespan)
+app = FastAPI(title="ClipCraft API", version="0.3.0", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=sorted(allowed_origins),
-    allow_origin_regex=r"https://([a-z0-9-]+\.)*vercel\.app|https?://(localhost|127\.0\.0\.1)(:\d+)?",
+    allow_origins=[settings.web_origin.rstrip("/")],
+    allow_origin_regex=r"https?://(localhost|127\.0\.0\.1)(:\d+)?",
     allow_credentials=False,
-    allow_methods=["GET", "POST", "PUT", "DELETE", "OPTIONS"],
-    allow_headers=["Authorization", "Content-Type"],
+    allow_methods=["GET", "POST", "OPTIONS"],
+    allow_headers=["Content-Type"],
 )
 
 
-def _repository_error(exc: RepositoryError) -> HTTPException:
-    return HTTPException(status_code=503, detail=str(exc))
-
-
-def _owned_job(job_id: str, user: CurrentUser):
+def _get_job(job_id: str):
     record = store.get(job_id)
-    if record is None or record.user_id != user.id:
+    if record is None:
         raise HTTPException(status_code=404, detail="Job not found")
     return record
 
 
-def _find_clip(job_id: str, filename: str, user: CurrentUser):
-    record = _owned_job(job_id, user)
+def _find_clip(job_id: str, filename: str):
+    record = _get_job(job_id)
     if record.status != JobStatus.COMPLETE:
         raise HTTPException(status_code=404, detail="Clip not found")
     clip = next((item for item in record.clips if item.filename == filename), None)
@@ -85,60 +80,20 @@ def _find_clip(job_id: str, filename: str, user: CurrentUser):
     return record, clip
 
 
-def _user_openai_settings(user: CurrentUser):
-    try:
-        record = repository.get_api_key_record(user.id, user.access_token)
-    except RepositoryError as exc:
-        raise _repository_error(exc) from exc
-    if not record:
+def _edit_window(record, clip) -> tuple[float, float]:
+    """How far the editor may move a clip's cuts: the previewed source around it."""
+    if not clip.preview_filename:
+        return clip.start, clip.end
+    duration = record.video.duration if record.video else clip.end
+    return clip_window(clip.start, clip.end, duration)
+
+
+def _require_openai_key() -> None:
+    if not settings.openai_api_key:
         raise HTTPException(
             status_code=409,
-            detail="Add your OpenAI API key in Settings before creating a project.",
+            detail="Add OPENAI_API_KEY to the .env file and restart the API.",
         )
-    try:
-        api_key = decrypt_secret(
-            record["encrypted_key"],
-            record["nonce"],
-            user.id,
-            settings.app_encryption_key,
-        )
-    except (KeyError, ValueError, RuntimeError) as exc:
-        raise HTTPException(
-            status_code=500,
-            detail="Your saved OpenAI key could not be decrypted. Add it again.",
-        ) from exc
-    return settings.model_copy(update={"openai_api_key": api_key})
-
-
-def _record_event(user: CurrentUser, name: str, properties: dict | None = None) -> None:
-    with suppress(RepositoryError):
-        repository.record_event(user.id, user.access_token, name, properties)
-
-
-def _media_signature(record_id: str, filename: str, user_id: str, expires: int) -> str:
-    try:
-        secret = base64.urlsafe_b64decode(settings.app_encryption_key.encode())
-    except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=503, detail="Media signing is not configured") from exc
-    payload = f"{record_id}:{filename}:{user_id}:{expires}".encode()
-    digest = hmac.new(secret, payload, hashlib.sha256).digest()
-    return base64.urlsafe_b64encode(digest).decode().rstrip("=")
-
-
-def _media_token(record_id: str, filename: str, user_id: str) -> str:
-    expires = int(time.time()) + 6 * 60 * 60
-    return f"{expires}.{_media_signature(record_id, filename, user_id, expires)}"
-
-
-def _verify_media_token(job_id: str, filename: str, user_id: str, token: str) -> None:
-    try:
-        expires_text, signature = token.split(".", 1)
-        expires = int(expires_text)
-    except (ValueError, TypeError) as exc:
-        raise HTTPException(status_code=403, detail="Invalid media link") from exc
-    expected = _media_signature(job_id, filename, user_id, expires)
-    if expires < int(time.time()) or not hmac.compare_digest(signature, expected):
-        raise HTTPException(status_code=403, detail="Expired or invalid media link")
 
 
 @app.get("/health")
@@ -147,122 +102,124 @@ def health() -> dict[str, str]:
 
 
 @app.get("/api/projects", response_model=ProjectListResponse)
-def list_projects(user: AuthenticatedUser) -> ProjectListResponse:
-    try:
-        projects = repository.list_projects(user.id, user.access_token)
-    except RepositoryError as exc:
-        raise _repository_error(exc) from exc
+def list_projects() -> ProjectListResponse:
+    projects = [
+        ProjectSummary(
+            id=record.id,
+            source_url=record.request.source_label,
+            source_kind=record.request.source_kind,
+            title=record.video.title if record.video else None,
+            status=record.status,
+            progress=record.progress,
+            message=record.message,
+            error=record.error,
+            clip_count=record.request.clip_count,
+            target_duration=record.request.target_duration,
+            created_at=record.created_at,
+            updated_at=record.updated_at,
+        )
+        for record in store.list()
+    ]
     return ProjectListResponse(projects=projects)
-
-
-@app.get("/api/account/openai-key", response_model=ApiKeyStatusResponse)
-def get_openai_key_status(
-    user: AuthenticatedUser,
-) -> ApiKeyStatusResponse:
-    try:
-        record = repository.get_api_key_record(user.id, user.access_token)
-    except RepositoryError as exc:
-        raise _repository_error(exc) from exc
-    return ApiKeyStatusResponse(
-        configured=record is not None,
-        last4=record.get("key_last4") if record else None,
-    )
-
-
-@app.put("/api/account/openai-key", response_model=ApiKeyStatusResponse)
-def save_openai_key(
-    payload: ApiKeyRequest,
-    user: AuthenticatedUser,
-) -> ApiKeyStatusResponse:
-    api_key = payload.api_key.strip()
-    if not api_key.startswith("sk-"):
-        raise HTTPException(status_code=422, detail="Enter a valid OpenAI API key")
-    try:
-        OpenAI(api_key=api_key).models.list()
-    except Exception as exc:
-        raise HTTPException(
-            status_code=422,
-            detail="OpenAI rejected this key. Check the key and its permissions.",
-        ) from exc
-    try:
-        encrypted, nonce = encrypt_secret(
-            api_key,
-            user.id,
-            settings.app_encryption_key,
-        )
-        repository.upsert_api_key(
-            user.id,
-            user.access_token,
-            encrypted,
-            nonce,
-            api_key[-4:],
-        )
-    except (RepositoryError, RuntimeError) as exc:
-        raise HTTPException(status_code=503, detail="Could not save the API key") from exc
-    _record_event(user, "openai_key_configured")
-    return ApiKeyStatusResponse(configured=True, last4=api_key[-4:])
-
-
-@app.delete("/api/account/openai-key", status_code=204)
-def delete_openai_key(user: AuthenticatedUser) -> None:
-    try:
-        repository.delete_api_key(user.id, user.access_token)
-    except RepositoryError as exc:
-        raise _repository_error(exc) from exc
 
 
 @app.post("/api/jobs", response_model=CreateJobResponse, status_code=202)
 def create_job(
     payload: CreateJobRequest,
     background_tasks: BackgroundTasks,
-    user: AuthenticatedUser,
 ) -> CreateJobResponse:
+    if payload.url is None:
+        raise HTTPException(status_code=422, detail="Enter a YouTube or Twitch VOD URL")
     try:
-        validate_youtube_url(str(payload.url))
+        source_kind = source_kind_for_url(str(payload.url))
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    _require_openai_key()
 
-    user_settings = _user_openai_settings(user)
     store.cleanup_expired(settings.job_retention_hours)
-    record = store.create(payload, user_id=user.id)
+    record = store.create(payload.model_copy(update={"source_kind": source_kind}))
+    background_tasks.add_task(run_job, record.id, store, settings)
+    return CreateJobResponse(id=record.id, status=record.status)
+
+
+@app.post("/api/uploads", response_model=CreateJobResponse, status_code=202)
+def create_upload_job(
+    background_tasks: BackgroundTasks,
+    file: Annotated[UploadFile, File()],
+    clip_count: Annotated[int, Form()] = 5,
+    target_duration: Annotated[int, Form()] = 45,
+    render: Annotated[str, Form()] = "{}",
+) -> CreateJobResponse:
+    name = Path(file.filename or "").name
+    extension = Path(name).suffix.lower()
+    if extension not in UPLOAD_EXTENSIONS:
+        raise HTTPException(
+            status_code=422,
+            detail="Upload an MP4, MOV, M4V, MKV, WebM, or AVI video",
+        )
     try:
-        repository.create_project(record, user.access_token)
-    except RepositoryError as exc:
-        (store.records_dir / f"{record.id}.json").unlink(missing_ok=True)
-        raise _repository_error(exc) from exc
-    _record_event(user, "project_created", {"project_id": record.id})
-    background_tasks.add_task(
-        run_job,
-        record.id,
-        store,
-        user_settings,
-        repository,
-        user.access_token,
-    )
+        payload = CreateJobRequest(
+            source_kind=SourceKind.UPLOAD,
+            upload_name=name[:200],
+            clip_count=clip_count,
+            target_duration=target_duration,
+            render=RenderOptions.model_validate(json.loads(render or "{}")),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail="Invalid upload options") from exc
+    _require_openai_key()
+
+    store.cleanup_expired(settings.job_retention_hours)
+    record = store.create(payload)
+    directory = store.directory(record.id)
+    directory.mkdir(parents=True, exist_ok=True)
+    partial = directory / f"source{extension}.uploading"
+    limit = settings.max_upload_mb * 1024 * 1024
+    written = 0
+    try:
+        with partial.open("wb") as destination:
+            while chunk := file.file.read(UPLOAD_CHUNK_BYTES):
+                written += len(chunk)
+                if written > limit:
+                    raise HTTPException(
+                        status_code=413,
+                        detail=f"Uploads are limited to {settings.max_upload_mb} MB",
+                    )
+                destination.write(chunk)
+        if written == 0:
+            raise HTTPException(status_code=422, detail="The uploaded file is empty")
+        partial.replace(directory / f"source{extension}")
+    except HTTPException:
+        partial.unlink(missing_ok=True)
+        store.update(
+            record.id,
+            status=JobStatus.FAILED,
+            message="Upload failed",
+            error="The upload did not complete",
+        )
+        raise
+    background_tasks.add_task(run_job, record.id, store, settings)
     return CreateJobResponse(id=record.id, status=record.status)
 
 
 @app.get("/api/jobs/{job_id}", response_model=JobResponse)
-def get_job(
-    job_id: str,
-    request: Request,
-    user: AuthenticatedUser,
-) -> JobResponse:
-    record = _owned_job(job_id, user)
+def get_job(job_id: str, request: Request) -> JobResponse:
+    record = _get_job(job_id)
     source_available = store.source_video(job_id) is not None
     clips = []
     for clip in record.clips:
-        token = _media_token(record.id, clip.filename, user.id)
-        media_url = str(
-            request.url_for("get_clip", job_id=job_id, filename=clip.filename)
+        media_url = str(request.url_for("get_clip", job_id=job_id, filename=clip.filename))
+        preview_url = (
+            str(request.url_for("get_preview", job_id=job_id, filename=clip.preview_filename))
+            if clip.preview_filename
+            else ""
         )
         clips.append(
             clip.model_copy(
                 update={
-                    "media_url": f"{media_url}?token={token}&v={clip.version}",
-                    "download_url": (
-                        f"{media_url}?token={token}&download=true&v={clip.version}"
-                    ),
+                    "media_url": f"{media_url}?v={clip.version}",
+                    "download_url": f"{media_url}?download=true&v={clip.version}",
+                    "preview_url": preview_url,
                     "editable": source_available,
                 }
             )
@@ -284,15 +241,12 @@ def get_job(
     "/api/jobs/{job_id}/clips/{filename}/transcript",
     response_model=ClipTranscriptResponse,
 )
-def get_clip_transcript(
-    job_id: str,
-    filename: str,
-    user: AuthenticatedUser,
-) -> ClipTranscriptResponse:
-    record, clip = _find_clip(job_id, filename, user)
+def get_clip_transcript(job_id: str, filename: str) -> ClipTranscriptResponse:
+    record, clip = _find_clip(job_id, filename)
     words = record.transcript.words if record.transcript else []
+    start, end = _edit_window(record, clip)
     return ClipTranscriptResponse(
-        words=[word for word in words if word.end > clip.start and word.start < clip.end]
+        words=[word for word in words if word.end > start and word.start < end]
     )
 
 
@@ -300,32 +254,35 @@ def get_clip_transcript(
     "/api/jobs/{job_id}/clips/{filename}/social-post",
     response_model=SocialPostResponse,
 )
-def create_social_post(
-    job_id: str,
-    filename: str,
-    user: AuthenticatedUser,
-) -> SocialPostResponse:
-    record, clip = _find_clip(job_id, filename, user)
+def create_social_post(job_id: str, filename: str) -> SocialPostResponse:
+    record, clip = _find_clip(job_id, filename)
     if not record.video:
         raise HTTPException(status_code=409, detail="Video context is unavailable")
+    _require_openai_key()
     start = clip.edit_settings.trim_start if clip.edit_settings else clip.start
     end = clip.edit_settings.trim_end if clip.edit_settings else clip.end
     words = record.transcript.words if record.transcript else []
     clip_words = [word for word in words if word.end > start and word.start < end]
+    context_words = [
+        word for word in words if word.end > start - SOCIAL_CONTEXT_SECONDS and word.end <= start
+    ]
     try:
-        text = generate_social_post(
+        posts = generate_social_post(
             video_title=record.video.title,
             clip=clip,
             words=clip_words,
-            settings=_user_openai_settings(user),
+            settings=settings,
+            channel=record.video.channel,
+            context_words=context_words,
         )
     except PipelineError as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
-    updated = store.update_clip(job_id, filename, social_post=text)
-    with suppress(RepositoryError):
-        repository.upsert_clips(updated, user.access_token)
-    _record_event(user, "social_post_generated", {"project_id": job_id})
-    return SocialPostResponse(text=text)
+    store.update_clip(job_id, filename, social_post=serialize_social_posts(posts))
+    return SocialPostResponse(
+        text=posts.quote,
+        story_text=posts.story,
+        breakdown_text=posts.breakdown,
+    )
 
 
 @app.post(
@@ -338,9 +295,8 @@ def render_clip(
     filename: str,
     payload: RenderClipRequest,
     background_tasks: BackgroundTasks,
-    user: AuthenticatedUser,
 ) -> RenderClipResponse:
-    record, clip = _find_clip(job_id, filename, user)
+    record, clip = _find_clip(job_id, filename)
     if store.source_video(job_id) is None:
         raise HTTPException(
             status_code=409,
@@ -350,10 +306,11 @@ def render_clip(
         raise HTTPException(status_code=409, detail="This clip is already rendering")
 
     edit = payload.settings
-    if edit.trim_start < clip.start or edit.trim_end > clip.end:
+    window_start, window_end = _edit_window(record, clip)
+    if edit.trim_start < window_start - 0.01 or edit.trim_end > window_end + 0.01:
         raise HTTPException(
             status_code=422,
-            detail="Trim values must stay within the original clip",
+            detail="Trim values must stay within the editable range around this clip",
         )
     if edit.trim_end - edit.trim_start < 2:
         raise HTTPException(status_code=422, detail="Edited clips must be at least 2 seconds")
@@ -366,16 +323,7 @@ def render_clip(
         render_status=ClipRenderStatus.RENDERING,
         render_error=None,
     )
-    background_tasks.add_task(
-        rerender_clip,
-        job_id,
-        filename,
-        edit,
-        store,
-        settings,
-        repository,
-        user.access_token,
-    )
+    background_tasks.add_task(rerender_clip, job_id, filename, edit, store, settings)
     return RenderClipResponse(filename=filename, status=ClipRenderStatus.RENDERING)
 
 
@@ -383,19 +331,16 @@ def render_clip(
 def get_clip(
     job_id: str,
     filename: str,
-    token: str = Query(...),
     download: bool = Query(default=False),
 ) -> FileResponse:
     record = store.get(job_id)
     if (
         record is None
         or record.status != JobStatus.COMPLETE
-        or not record.user_id
         or Path(filename).name != filename
         or not any(clip.filename == filename for clip in record.clips)
     ):
         raise HTTPException(status_code=404, detail="Clip not found")
-    _verify_media_token(job_id, filename, record.user_id, token)
     path = store.directory(job_id) / "clips" / filename
     if not path.is_file():
         raise HTTPException(status_code=404, detail="Clip not found")
@@ -404,5 +349,20 @@ def get_clip(
         media_type="video/mp4",
         filename=filename if download else None,
         content_disposition_type="attachment" if download else "inline",
-        headers={"Cache-Control": "private, no-cache"},
+        headers={"Cache-Control": "no-cache"},
     )
+
+
+@app.get("/api/jobs/{job_id}/previews/{filename}", name="get_preview")
+def get_preview(job_id: str, filename: str) -> FileResponse:
+    record = store.get(job_id)
+    if (
+        record is None
+        or Path(filename).name != filename
+        or not any(clip.preview_filename == filename for clip in record.clips)
+    ):
+        raise HTTPException(status_code=404, detail="Preview not found")
+    path = store.directory(job_id) / "previews" / filename
+    if not path.is_file():
+        raise HTTPException(status_code=404, detail="Preview not found")
+    return FileResponse(path, media_type="video/mp4", headers={"Cache-Control": "no-cache"})

@@ -8,7 +8,7 @@ export default function Home() {
   return (
     <div className="landing-page">
       <CloudBackdrop />
-      <SiteHeader action signIn />
+      <SiteHeader action />
 
       <main>
         <section className="landing-hero">
@@ -24,7 +24,7 @@ export default function Home() {
             Start clipping
           </Link>
           <p className="landing-note">
-            Sign in, add your OpenAI key, and paste a YouTube link. ClipCraft handles the rest.
+            Paste a YouTube link. ClipCraft handles the rest.
           </p>
         </section>
 

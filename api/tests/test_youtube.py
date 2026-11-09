@@ -41,9 +41,14 @@ def test_rejects_untrusted_urls(url: str) -> None:
 
 
 def test_ytdlp_command_enables_cloud_friendly_clients(monkeypatch) -> None:
-    monkeypatch.setattr("app.services.youtube.shutil.which", lambda name: "/usr/bin/node" if name == "node" else None)
+    monkeypatch.setattr(
+        "app.services.youtube.shutil.which",
+        lambda name: "/usr/bin/node" if name == "node" else None,
+    )
     settings = Settings(ytdlp_proxy="socks5://proxy.example:1080")
-    command = ytdlp_command(settings, ["https://youtu.be/test"], "android_vr,web_embedded,tv,web_safari")
+    command = ytdlp_command(
+        settings, ["https://youtu.be/test"], "android_vr,web_embedded,tv,web_safari"
+    )
 
     assert "--js-runtimes" in command
     assert "node" in command
@@ -63,12 +68,18 @@ def test_fetch_metadata_retries_player_clients(monkeypatch) -> None:
     def fake_run(command: list[str], timeout: int):
         del timeout
         extractor = next(
-            (item.split("=", 1)[1] for item in command if item.startswith("youtube:player_client=")),
+            (
+                item.split("=", 1)[1]
+                for item in command
+                if item.startswith("youtube:player_client=")
+            ),
             "default",
         )
         attempts.append(extractor)
         if extractor != "default":
-            raise PipelineError("YouTube blocked this download from our cloud server. Wait a minute and try again.")
+            raise PipelineError(
+                "YouTube blocked this download from our cloud server. Wait a minute and try again."
+            )
         return subprocess.CompletedProcess(
             command,
             0,
@@ -110,3 +121,24 @@ def test_download_retries_without_format_filter(monkeypatch, tmp_path: Path) -> 
     assert len(calls) == 2
     assert "-f" in calls[0]
     assert "-f" not in calls[1]
+
+
+@pytest.mark.parametrize(
+    ("url", "kind"),
+    [
+        ("https://youtu.be/example", "youtube"),
+        ("https://www.twitch.tv/videos/2233445566", "twitch"),
+    ],
+)
+def test_classifies_supported_sources(url: str, kind: str) -> None:
+    from app.services.youtube import source_kind_for_url
+
+    assert source_kind_for_url(url) == kind
+
+
+def test_rejects_twitch_channels_and_clips() -> None:
+    from app.services.youtube import source_kind_for_url
+
+    for url in ("https://www.twitch.tv/somechannel", "https://clips.twitch.tv/abc"):
+        with pytest.raises(ValueError):
+            source_kind_for_url(url)
